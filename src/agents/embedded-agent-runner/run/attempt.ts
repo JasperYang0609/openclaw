@@ -160,6 +160,7 @@ import {
   createCodeModeTools,
   resolveCodeModeConfig,
 } from "../../code-mode.js";
+import { isRealConversationMessage } from "../../compaction-real-conversation.js";
 import {
   resolveConversationCapabilityProfile,
   type ResolvedConversationCapabilityProfile,
@@ -4387,6 +4388,11 @@ export async function runEmbeddedAttempt(
           }
           if (promptHistoryChanged || aggregatePressureEngaged) {
             const sessionLogKey = params.sessionKey ?? params.sessionId ?? "unknown";
+            const hasRealConversationMessages = activeSession.messages.some(
+              (message, index, messages) => isRealConversationMessage(message, messages, index),
+            );
+            const shouldDeferAggregatePressureToPrecheck =
+              aggregatePressureEngaged && !hasRealConversationMessages;
             const truncationLog =
               `[tool-result-truncation] Truncated ${promptToolResultTruncation.truncatedCount} ` +
               `tool result(s) for prompt history ` +
@@ -4398,15 +4404,21 @@ export async function runEmbeddedAttempt(
               if (!aggregateToolResultPressureWarnings.has(sessionLogKey)) {
                 aggregateToolResultPressureWarnings.add(sessionLogKey);
                 log.warn(
-                  `${truncationLog}; aggregate tool-result pressure detected, compaction has been requested; consider /compact or /new if pressure persists`,
+                  `${truncationLog}; aggregate tool-result pressure detected, ` +
+                    (shouldDeferAggregatePressureToPrecheck
+                      ? `no real conversation messages are compactable; ` +
+                        `deferring recovery routing to the provider-bound precheck`
+                      : `compaction has been requested; consider /compact or /new if pressure persists`),
                 );
               }
-              // Compaction and aggregate truncation both target about half the window;
-              // compact-then-truncate prevents re-hitting the same cap on the next turn.
-              preflightRecovery = { route: "compact_then_truncate" };
-              promptError = new Error(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
-              promptErrorSource = "precheck";
-              skipPromptSubmission = true;
+              if (!shouldDeferAggregatePressureToPrecheck) {
+                // Compaction and aggregate truncation both target about half the window;
+                // compact-then-truncate prevents re-hitting the same cap on the next turn.
+                preflightRecovery = { route: "compact_then_truncate" };
+                promptError = new Error(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
+                promptErrorSource = "precheck";
+                skipPromptSubmission = true;
+              }
             } else {
               log.info(truncationLog);
             }

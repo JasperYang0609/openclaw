@@ -3315,4 +3315,179 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
     expect(result.preflightRecovery).toEqual({ route: "compact_then_truncate" });
     expect(hoisted.preemptiveCompactionCalls).toHaveLength(0);
   });
+
+  it("persists aggregate truncation before compacting an incident-sized protected tool tail", async () => {
+    const contextTokenBudget = 272_000;
+    const resultCount = 83;
+    const totalToolResultChars = 389_372;
+    const baseResultChars = Math.floor(totalToolResultChars / resultCount);
+    const remainderChars = totalToolResultChars % resultCount;
+    const sessionMessages: AgentMessage[] = Array.from({ length: 41 }, (_, index) =>
+      makeAgentAssistantMessage({
+        content: [],
+        timestamp: index + 1,
+      }),
+    );
+    for (let index = 0; index < resultCount; index += 1) {
+      sessionMessages.push({
+        role: "toolResult",
+        toolCallId: `incident_${index}`,
+        toolName: "read",
+        content: [
+          {
+            type: "text",
+            text: "x".repeat(baseResultChars + (index < remainderChars ? 1 : 0)),
+          },
+        ],
+        isError: false,
+        timestamp: 100 + index,
+      } as AgentMessage);
+    }
+    expect(sumToolResultTextChars(sessionMessages)).toBe(totalToolResultChars);
+
+    type TestBranchEntry = {
+      id: string;
+      parentId: string | null;
+      type: "message";
+      message: AgentMessage;
+    };
+    let nextEntryId = sessionMessages.length;
+    let activeBranch: TestBranchEntry[] = sessionMessages.map((message, index) => ({
+      id: `entry-${index}`,
+      parentId: index === 0 ? null : `entry-${index - 1}`,
+      type: "message",
+      message,
+    }));
+    let sawPrompt = false;
+    hoisted.compactionReserveTokens = 50_000;
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      sessionMessages,
+      attemptOverrides: {
+        contextTokenBudget,
+        config: {
+          agents: {
+            defaults: {
+              contextLimits: {
+                toolResultMaxChars: 16_000,
+              },
+            },
+            list: [{ id: "main" }],
+          },
+        } as OpenClawConfig,
+        runtimePlan: {
+          prompt: {
+            resolveSystemPromptContribution: () => undefined,
+          },
+          transcript: {
+            resolvePolicy: () => ({
+              sanitizeMode: "images-only",
+              sanitizeToolCallIds: false,
+              preserveNativeAnthropicToolUseIds: false,
+              repairToolUseResultPairing: false,
+              preserveSignatures: false,
+              sanitizeThinkingSignatures: false,
+              dropThinkingBlocks: false,
+              dropReasoningFromHistory: false,
+              applyGoogleTurnOrdering: false,
+              validateGeminiTurns: false,
+              validateAnthropicTurns: false,
+              allowSyntheticToolResults: false,
+            }),
+          },
+          transport: {
+            extraParams: {},
+            resolveExtraParams: () => ({}),
+          },
+          tools: {
+            normalize: (tools: unknown[]) => tools,
+            logDiagnostics: () => {},
+          },
+          auth: {
+            providerForAuth: "openai",
+            authProfileProviderForAuth: "",
+            forwardedAuthProfileId: undefined,
+          },
+          delivery: {
+            isSilentPayload: () => false,
+            resolveFollowupRoute: () => undefined,
+          },
+          outcome: {
+            classifyRunResult: () => undefined,
+          },
+          observability: {
+            resolvedRef: "openai/gpt-test",
+            provider: "openai",
+            modelId: "gpt-test",
+            modelApi: "openai-completions",
+          },
+        } as never,
+      },
+      createSession: () => {
+        const sessionManager = hoisted.sessionManager as typeof hoisted.sessionManager & {
+          appendMessage: ReturnType<typeof vi.fn>;
+          getBranch: ReturnType<typeof vi.fn>;
+        };
+        sessionManager.getBranch = vi.fn(() => activeBranch);
+        sessionManager.resetLeaf.mockImplementation(() => {
+          activeBranch = [];
+        });
+        sessionManager.branch.mockImplementation((parentId) => {
+          const parentIndex = activeBranch.findIndex((entry) => entry.id === parentId);
+          activeBranch = parentIndex >= 0 ? activeBranch.slice(0, parentIndex + 1) : [];
+        });
+        sessionManager.appendMessage = vi.fn((message: AgentMessage) => {
+          const id = `rewrite-${nextEntryId++}`;
+          activeBranch.push({
+            id,
+            parentId: activeBranch.at(-1)?.id ?? null,
+            type: "message",
+            message,
+          });
+          return id;
+        });
+        sessionManager.buildSessionContext.mockImplementation(() => ({
+          messages: activeBranch.map((entry) => entry.message),
+        }));
+        return createDefaultEmbeddedSession({
+          initialMessages: sessionMessages,
+          prompt: async () => {
+            sawPrompt = true;
+          },
+        });
+      },
+    });
+
+    expect(sawPrompt).toBe(false);
+    expect(hoisted.preemptiveCompactionCalls).toHaveLength(1);
+    expect(result.contextBudgetStatus).toMatchObject({
+      route: "truncate_tool_results_only",
+      shouldCompact: false,
+      contextTokenBudget,
+      promptBudgetBeforeReserve: 222_000,
+      reserveTokens: 50_000,
+      toolResultReducibleChars: 117_372,
+      messageCount: 124,
+      unwindowedMessageCount: 124,
+    });
+    expect(result.contextBudgetStatus?.overflowTokens).toBeGreaterThan(0);
+    expect(result.preflightRecovery).toMatchObject({
+      route: "truncate_tool_results_only",
+      handled: true,
+    });
+    const rewrittenMessages = activeBranch.map((entry) => entry.message);
+    expect(rewrittenMessages).toHaveLength(124);
+    expect(rewrittenMessages.filter((message) => message.role === "toolResult")).toHaveLength(
+      resultCount,
+    );
+    expect(
+      rewrittenMessages
+        .filter((message) => message.role === "toolResult")
+        .map((message) => (message as { toolCallId?: string }).toolCallId),
+    ).toEqual(Array.from({ length: resultCount }, (_, index) => `incident_${index}`));
+    expect(sumToolResultTextChars(rewrittenMessages)).toBe(contextTokenBudget);
+  });
 });

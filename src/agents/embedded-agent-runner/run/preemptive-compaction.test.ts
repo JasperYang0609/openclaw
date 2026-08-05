@@ -392,6 +392,34 @@ describe("preemptive-compaction", () => {
     expect(result.toolResultReducibleChars).toBeGreaterThan(0);
   });
 
+  it("routes a 272K aggregate-tool incident to truncation instead of empty compaction", () => {
+    const totalToolResultChars = 389_372;
+    const toolResultCount = 83;
+    const baseSize = Math.floor(totalToolResultChars / toolResultCount);
+    const remainder = totalToolResultChars - baseSize * toolResultCount;
+    const messages = Array.from({ length: toolResultCount }, (_, index) =>
+      makeToolResultMessage("x".repeat(baseSize + (index < remainder ? 1 : 0))),
+    );
+
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages,
+      systemPrompt: "system prompt already included in the rendered-boundary estimate",
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 50_000,
+      toolResultMaxChars: 16_000,
+      llmBoundaryTokenPressure: {
+        estimatedPromptTokens: 222_633,
+        source: "regression_2026_08_05",
+      },
+    });
+
+    expect(result.overflowTokens).toBe(633);
+    expect(result.toolResultReducibleChars).toBeGreaterThan(100_000);
+    expect(result.route).toBe("truncate_tool_results_only");
+    expect(result.shouldCompact).toBe(false);
+  });
+
   it("routes to compact then truncate when recent tool tails help but cannot fully cover the overflow", () => {
     const medium = "alpha beta gamma delta epsilon ".repeat(600);
     const longHistory = "old discussion with substantial retained context and decisions ".repeat(

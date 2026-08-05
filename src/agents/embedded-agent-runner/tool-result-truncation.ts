@@ -21,6 +21,7 @@ import { formatFullOutputFooter } from "../sessions/tools/tool-contracts.js";
 import { formatContextLimitTruncationNotice } from "./context-truncation-notice.js";
 import { log } from "./logger.js";
 import type { ToolResultPromptProjectionState } from "./session-prompt-state.js";
+import { TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE } from "./tool-result-char-estimator.js";
 import {
   persistTranscriptStateMutation,
   readTranscriptFileState,
@@ -311,11 +312,13 @@ export function resolveLiveToolResultAggregateMaxChars(params: {
   const contextWindowTokens = Number.isFinite(params.contextWindowTokens)
     ? Math.max(1, Math.floor(params.contextWindowTokens))
     : 1;
-  // Aggregate truncation shares the 0.5 history-pressure invariant used by
-  // safeguard compaction and the mid-turn single-result guard. If this drifts,
-  // truncation can hide pressure that compaction routing should see.
+  // Aggregate truncation shares both the 0.5 history-pressure invariant and
+  // the conservative tool-result token density used by prompt prechecks. If
+  // either drifts, truncation can hide pressure that compaction routing sees.
   const contextShareChars = Math.floor(
-    contextWindowTokens * 4 * AGGREGATE_TOOL_RESULT_CONTEXT_SHARE,
+    contextWindowTokens *
+      TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE *
+      AGGREGATE_TOOL_RESULT_CONTEXT_SHARE,
   );
   return Math.max(
     perResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER,

@@ -352,7 +352,7 @@ describe("installToolResultContextGuard", () => {
       expect(err).toBeInstanceOf(MidTurnPrecheckSignal);
       const signal = err as MidTurnPrecheckSignal;
       expect(signal.name).toBe("MidTurnPrecheckSignal");
-      expect(signal.request.route).toBe("compact_only");
+      expect(signal.request.route).toBe("compact_then_truncate");
       expect(typeof signal.request.overflowTokens).toBe("number");
       expect(typeof signal.request.toolResultReducibleChars).toBe("number");
     }

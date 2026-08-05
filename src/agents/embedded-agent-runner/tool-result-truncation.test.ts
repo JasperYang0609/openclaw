@@ -351,9 +351,10 @@ describe("calculateMaxToolResultChars", () => {
 
   it.each([
     { contextWindowTokens: 20_000, perResultMaxChars: 16_000, aggregateMaxChars: 64_000 },
-    { contextWindowTokens: 128_000, perResultMaxChars: 32_000, aggregateMaxChars: 256_000 },
-    { contextWindowTokens: 200_000, perResultMaxChars: 64_000, aggregateMaxChars: 400_000 },
-    { contextWindowTokens: 1_000_000, perResultMaxChars: 64_000, aggregateMaxChars: 2_000_000 },
+    { contextWindowTokens: 128_000, perResultMaxChars: 32_000, aggregateMaxChars: 128_000 },
+    { contextWindowTokens: 200_000, perResultMaxChars: 64_000, aggregateMaxChars: 256_000 },
+    { contextWindowTokens: 272_000, perResultMaxChars: 16_000, aggregateMaxChars: 272_000 },
+    { contextWindowTokens: 1_000_000, perResultMaxChars: 64_000, aggregateMaxChars: 1_000_000 },
   ])(
     "resolves aggregate live cap for $contextWindowTokens token windows",
     ({ contextWindowTokens, perResultMaxChars, aggregateMaxChars }) => {

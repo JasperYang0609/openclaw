@@ -17,6 +17,7 @@ import {
   COMPACTION_SUMMARY_PREFIX,
   COMPACTION_SUMMARY_SUFFIX,
 } from "../../runtime/index.js";
+import { TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE } from "../tool-result-char-estimator.js";
 import { estimateToolResultReductionPotential } from "../tool-result-truncation.js";
 import type { PreemptiveCompactionRoute } from "./preemptive-compaction.types.js";
 
@@ -24,7 +25,6 @@ export const PREEMPTIVE_OVERFLOW_ERROR_TEXT =
   "Context overflow: prompt too large for the model (precheck).";
 
 const ESTIMATED_CHARS_PER_TOKEN = 4;
-const TOOL_RESULT_CHARS_PER_TOKEN = 2;
 const JSON_PAYLOAD_CHARS_PER_TOKEN = 3;
 const MESSAGE_BOUNDARY_OVERHEAD_TOKENS = 12;
 const CONTENT_BLOCK_OVERHEAD_TOKENS = 6;
@@ -113,7 +113,9 @@ function estimateContentBlockTokenPressure(
 }
 
 function estimateToolResultStringTokenPressure(text: string): number {
-  const conservativeToolResultEstimate = Math.ceil(text.length / TOOL_RESULT_CHARS_PER_TOKEN);
+  const conservativeToolResultEstimate = Math.ceil(
+    text.length / TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE,
+  );
   const cjkAwareEstimate = estimateStringTokenPressure(text);
   return Math.max(conservativeToolResultEstimate, cjkAwareEstimate);
 }
