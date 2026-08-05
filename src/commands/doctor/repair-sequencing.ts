@@ -5,6 +5,10 @@ import {
   materializePluginAutoEnableCandidates,
 } from "../../config/plugin-auto-enable.js";
 import { migrateLegacyOnboardingRecommendationsScope } from "../../infra/state-migrations.onboarding-recommendations.js";
+import {
+  loadPluginMetadataSnapshot,
+  type PluginMetadataSnapshot,
+} from "../../plugins/plugin-metadata-snapshot.js";
 import { migrateLegacyTailscaleProfileIdentities } from "../../state/user-profiles-tailscale-migration.js";
 import {
   collectOpenAICodexAuthProfileStoreIdMap,
@@ -51,14 +55,17 @@ export async function runDoctorRepairSequence(params: {
   doctorFixCommand: string;
   env?: NodeJS.ProcessEnv;
   blockedCodexProviderPlan?: BlockedLegacyOpenAICodexProviderPlan;
+  pluginMetadataSnapshot?: PluginMetadataSnapshot;
 }): Promise<{
   state: DoctorConfigMutationState;
   changeNotes: string[];
   warningNotes: string[];
   authProfilesRepaired: boolean;
   openAICodexAuthProfileIdMap?: ReadonlyMap<string, string>;
+  pluginMetadataSnapshot?: PluginMetadataSnapshot;
 }> {
   let state = params.state;
+  let pluginMetadataSnapshot = params.pluginMetadataSnapshot;
   const changeNotes: string[] = [];
   const warningNotes: string[] = [];
   const env = params.env ?? process.env;
@@ -120,12 +127,12 @@ export async function runDoctorRepairSequence(params: {
     applyMutation(mutation);
   }
   applyMutation(maybeRepairBundledPluginLoadPaths(state.candidate, env));
-  maybeRepairStaleManagedNpmBundledPlugins({
+  const removedStaleManagedNpmBundledPlugins = maybeRepairStaleManagedNpmBundledPlugins({
     config: state.candidate,
     env,
     prompter: { shouldRepair: true },
   });
-  await maybeRepairPluginOpenClawHostLinks({
+  const repairedPluginOpenClawHostLinks = await maybeRepairPluginOpenClawHostLinks({
     env,
     prompter: { shouldRepair: true },
   });
@@ -162,15 +169,29 @@ export async function runDoctorRepairSequence(params: {
     cfg: state.candidate,
     env,
   });
+  const repairedPluginIds = missingConfiguredPluginInstallRepair.repairedPluginIds ?? [];
+  if (
+    removedStaleManagedNpmBundledPlugins ||
+    repairedPluginOpenClawHostLinks ||
+    missingConfiguredPluginInstallRepair.pluginInventoryChanged
+  ) {
+    pluginMetadataSnapshot = loadPluginMetadataSnapshot({ config: state.candidate, env });
+  }
   if (missingConfiguredPluginInstallRepair.changes.length > 0) {
     appendNotes(changeNotes, missingConfiguredPluginInstallRepair.changes);
-    applyMutation(applyPluginAutoEnable({ config: state.candidate, env }));
-    const repairedPluginIds = missingConfiguredPluginInstallRepair.repairedPluginIds ?? [];
+    applyMutation(
+      applyPluginAutoEnable({
+        config: state.candidate,
+        env,
+        manifestRegistry: pluginMetadataSnapshot?.manifestRegistry,
+      }),
+    );
     if (repairedPluginIds.length > 0) {
       applyMutation(
         materializePluginAutoEnableCandidates({
           config: state.candidate,
           env,
+          manifestRegistry: pluginMetadataSnapshot?.manifestRegistry,
           candidates: repairedPluginIds.map((pluginId) => ({
             pluginId,
             kind: "configured-plugin-repaired" as const,
@@ -203,7 +224,12 @@ export async function runDoctorRepairSequence(params: {
   if (pluginInstallRepairConverged) {
     // Provider availability is authoritative only after configured plugin repair
     // converges. Preserve model refs while package installation still needs a retry.
-    applyMutation(repairStaleAgentModelRefs(state.candidate, { env }));
+    applyMutation(
+      repairStaleAgentModelRefs(state.candidate, {
+        env,
+        pluginMetadataSnapshot,
+      }),
+    );
   }
   if (!packageSwapInProgress && !hasUnscopedInstallRepairWarnings) {
     applyMutation(
@@ -284,5 +310,6 @@ export async function runDoctorRepairSequence(params: {
     warningNotes,
     authProfilesRepaired,
     ...(openAICodexAuthProfileIdMap.size > 0 ? { openAICodexAuthProfileIdMap } : {}),
+    ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
   };
 }

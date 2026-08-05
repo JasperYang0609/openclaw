@@ -1,6 +1,7 @@
 // Doctor repair sequencing tests cover ordered repair execution and dependency handling.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import { runDoctorRepairSequence } from "./repair-sequencing.js";
 
 const mocks = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getInstalledPluginRecord: vi.fn(),
   isInstalledPluginEnabled: vi.fn(),
   loadInstalledPluginIndex: vi.fn(),
+  loadPluginMetadataSnapshot: vi.fn(),
   maybeRepairGroupAllowFromFallback: vi.fn(),
   maybeRepairPluginOpenClawHostLinks: vi.fn(),
   maybeRepairLegacyOAuthSidecarProfiles: vi.fn(),
@@ -85,6 +87,10 @@ vi.mock("../../plugins/installed-plugin-index.js", async (importOriginal) => ({
   getInstalledPluginRecord: mocks.getInstalledPluginRecord,
   isInstalledPluginEnabled: mocks.isInstalledPluginEnabled,
   loadInstalledPluginIndex: mocks.loadInstalledPluginIndex,
+}));
+
+vi.mock("../../plugins/plugin-metadata-snapshot.js", () => ({
+  loadPluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
 }));
 
 vi.mock("./shared/channel-doctor.js", () => ({
@@ -250,6 +256,9 @@ describe("doctor repair sequencing", () => {
     mocks.getInstalledPluginRecord.mockReturnValue(undefined);
     mocks.isInstalledPluginEnabled.mockReturnValue(false);
     mocks.loadInstalledPluginIndex.mockReturnValue({ plugins: [] });
+    mocks.loadPluginMetadataSnapshot.mockReturnValue({
+      manifestRegistry: { plugins: [], diagnostics: [] },
+    });
     mocks.maybeRepairGroupAllowFromFallback.mockImplementation((cfg: OpenClawConfig) => ({
       config: cfg,
       changes: [],
@@ -509,6 +518,10 @@ describe("doctor repair sequencing", () => {
 
   it("repairs managed npm plugin drift before missing plugin install repair", async () => {
     const events: string[] = [];
+    const refreshedSnapshot = {
+      manifestRegistry: { plugins: [], diagnostics: [] },
+    };
+    mocks.loadPluginMetadataSnapshot.mockReturnValueOnce(refreshedSnapshot);
     mocks.maybeRepairStaleManagedNpmBundledPlugins.mockImplementation(() => {
       events.push("bundled-shadow-cleanup");
       return true;
@@ -522,7 +535,7 @@ describe("doctor repair sequencing", () => {
       return { changes: [], warnings: [] };
     });
 
-    await runDoctorRepairSequence({
+    const result = await runDoctorRepairSequence({
       state: {
         cfg: {
           plugins: {
@@ -553,6 +566,8 @@ describe("doctor repair sequencing", () => {
     const peerLinkCall = mocks.maybeRepairPluginOpenClawHostLinks.mock.calls[0]?.[0];
     expect(peerLinkCall?.prompter).toEqual({ shouldRepair: true });
     expect(peerLinkCall?.env).toBe(process.env);
+    expect(mocks.loadPluginMetadataSnapshot).toHaveBeenCalledOnce();
+    expect(result.pluginMetadataSnapshot).toBe(refreshedSnapshot);
   });
 
   it("repairs stale OAuth shadows before importing and removing auth JSON", async () => {
@@ -724,6 +739,7 @@ describe("doctor repair sequencing", () => {
         changes: ['Installed missing configured plugin "mistral" from @openclaw/mistral-provider.'],
         warnings: [],
         repairedPluginIds: ["mistral"],
+        pluginInventoryChanged: true,
       };
     });
     mocks.repairStaleAgentModelRefs.mockImplementationOnce((cfg: OpenClawConfig) => ({
@@ -817,6 +833,7 @@ describe("doctor repair sequencing", () => {
       changes: ['Installed missing configured plugin "discord" from @openclaw/discord.'],
       warnings: [],
       repairedPluginIds: ["discord"],
+      pluginInventoryChanged: true,
     });
     mocks.materializePluginAutoEnableCandidates.mockImplementationOnce(
       (params: { config: OpenClawConfig }) => ({
@@ -902,6 +919,7 @@ describe("doctor repair sequencing", () => {
       changes: ['Installed missing configured plugin "exa" from @openclaw/exa-plugin.'],
       warnings: [],
       repairedPluginIds: ["exa"],
+      pluginInventoryChanged: true,
     });
     mocks.materializePluginAutoEnableCandidates.mockImplementationOnce(
       (params: { config: OpenClawConfig }) => ({
@@ -932,13 +950,62 @@ describe("doctor repair sequencing", () => {
     expect(mocks.materializePluginAutoEnableCandidates).toHaveBeenCalledWith({
       config: {},
       env: process.env,
+      manifestRegistry: { plugins: [], diagnostics: [] },
       candidates: [{ pluginId: "exa", kind: "configured-plugin-repaired" }],
     });
+    expect(mocks.loadPluginMetadataSnapshot).toHaveBeenCalledTimes(1);
     expect(result.state.candidate.plugins?.entries?.exa).toEqual({ enabled: true });
     expect(result.changeNotes).toStrictEqual([
       'Installed missing configured plugin "exa" from @openclaw/exa-plugin.',
       "exa installed for existing configuration, enabled automatically.",
     ]);
+  });
+
+  it("refreshes retained metadata after cleanup-only plugin inventory repairs", async () => {
+    const staleSnapshot = {
+      manifestRegistry: {
+        plugins: [{ id: "google-meet" }],
+        diagnostics: [],
+      },
+    };
+    const refreshedSnapshot = {
+      manifestRegistry: { plugins: [], diagnostics: [] },
+    };
+    mocks.loadPluginMetadataSnapshot.mockReturnValueOnce(refreshedSnapshot);
+    mocks.repairMissingConfiguredPluginInstalls.mockResolvedValueOnce({
+      changes: ['Removed stale managed install record for bundled plugin "google-meet".'],
+      warnings: [],
+      pluginInventoryChanged: true,
+    });
+
+    const result = await runDoctorRepairSequence({
+      state: {
+        cfg: {} as OpenClawConfig,
+        candidate: {} as OpenClawConfig,
+        pendingChanges: false,
+        fixHints: [],
+      },
+      doctorFixCommand: "openclaw doctor --fix",
+      pluginMetadataSnapshot: staleSnapshot as unknown as PluginMetadataSnapshot,
+    });
+
+    expect(mocks.loadPluginMetadataSnapshot).toHaveBeenCalledWith({
+      config: {},
+      env: process.env,
+    });
+    expect(mocks.applyPluginAutoEnable).toHaveBeenCalledWith({
+      config: {},
+      env: process.env,
+      manifestRegistry: refreshedSnapshot.manifestRegistry,
+    });
+    expect(mocks.repairStaleAgentModelRefs).toHaveBeenCalledWith(
+      {},
+      {
+        env: process.env,
+        pluginMetadataSnapshot: refreshedSnapshot,
+      },
+    );
+    expect(result.pluginMetadataSnapshot).toBe(refreshedSnapshot);
   });
 
   it("surfaces ClawHub notices from successful missing configured plugin repair", async () => {
