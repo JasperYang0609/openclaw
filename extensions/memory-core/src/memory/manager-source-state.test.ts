@@ -1,11 +1,53 @@
 // Memory Core tests cover manager source state plugin behavior.
 import { describe, expect, it } from "vitest";
 import {
+  hasMemorySourceStateDrift,
   loadMemorySourceFileState,
   resolveMemorySourceExistingHash,
 } from "./manager-source-state.js";
 
 describe("memory source state", () => {
+  it.each([
+    {
+      name: "unchanged",
+      files: [{ path: "memory/one.md", hash: "hash-1" }],
+      existingRows: [{ path: "memory/one.md", hash: "hash-1" }],
+      expected: false,
+    },
+    {
+      name: "missing indexed row",
+      files: [
+        { path: "memory/one.md", hash: "hash-1" },
+        { path: "MEMORY.md", hash: "hash-2" },
+      ],
+      existingRows: [{ path: "memory/one.md", hash: "hash-1" }],
+      expected: true,
+    },
+    {
+      name: "changed hash",
+      files: [{ path: "memory/one.md", hash: "hash-2" }],
+      existingRows: [{ path: "memory/one.md", hash: "hash-1" }],
+      expected: true,
+    },
+    {
+      name: "invalidated hash",
+      files: [{ path: "memory/one.md", hash: "hash-1" }],
+      existingRows: [{ path: "memory/one.md", hash: "" }],
+      expected: true,
+    },
+    {
+      name: "stale indexed row",
+      files: [{ path: "memory/one.md", hash: "hash-1" }],
+      existingRows: [
+        { path: "memory/one.md", hash: "hash-1" },
+        { path: "memory/stale.md", hash: "hash-2" },
+      ],
+      expected: true,
+    },
+  ])("reports $name source state", ({ files, existingRows, expected }) => {
+    expect(hasMemorySourceStateDrift({ files, existingRows })).toBe(expected);
+  });
+
   it("loads source hashes with one bulk query", () => {
     const calls: Array<{ sql: string; args: unknown[] }> = [];
     const state = loadMemorySourceFileState({

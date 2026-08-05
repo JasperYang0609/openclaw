@@ -14,6 +14,7 @@ import {
 import { MemoryManagerSessionSyncOps } from "./manager-session-sync-ops.js";
 import { resolveMemorySessionSyncPlan } from "./manager-session-sync-state.js";
 import {
+  hasMemorySourceStateDrift,
   loadMemorySourceFileState,
   resolveMemorySourceExistingHash,
 } from "./manager-source-state.js";
@@ -42,6 +43,37 @@ function createSessionSyncYield(total: number): () => Promise<void> {
 }
 
 export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyncOps {
+  private async listMemoryFileEntries(): Promise<MemoryIndexEntry[]> {
+    const files = await listMemoryFiles(
+      this.workspaceDir,
+      this.settings.extraPaths,
+      this.settings.multimodal,
+    );
+    return (
+      await runWithConcurrency(
+        files.map(
+          (file) => async () =>
+            await buildFileEntry(file, this.workspaceDir, this.settings.multimodal),
+        ),
+        this.getIndexConcurrency(),
+      )
+    ).filter((entry): entry is MemoryIndexEntry => entry !== null);
+  }
+
+  protected async markMemorySourceStateDirty(): Promise<boolean> {
+    if (!this.sources.has("memory") || this.closed) {
+      return false;
+    }
+    const fileEntries = await this.listMemoryFileEntries();
+    const existingRows = loadMemorySourceFileState({
+      db: this.db,
+      source: "memory",
+    }).rows;
+    const dirty = hasMemorySourceStateDrift({ files: fileEntries, existingRows });
+    this.dirty ||= dirty;
+    return dirty;
+  }
+
   protected override async syncMemoryFiles(params: {
     needsFullReindex: boolean;
     progress?: MemorySyncProgressState;
@@ -58,20 +90,7 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
         ? this.db.prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ?`)
         : null;
 
-    const files = await listMemoryFiles(
-      this.workspaceDir,
-      this.settings.extraPaths,
-      this.settings.multimodal,
-    );
-    const fileEntries = (
-      await runWithConcurrency(
-        files.map(
-          (file) => async () =>
-            await buildFileEntry(file, this.workspaceDir, this.settings.multimodal),
-        ),
-        this.getIndexConcurrency(),
-      )
-    ).filter((entry): entry is MemoryIndexEntry => entry !== null);
+    const fileEntries = await this.listMemoryFileEntries();
     log.debug("memory sync: indexing memory files", {
       files: fileEntries.length,
       needsFullReindex: params.needsFullReindex,

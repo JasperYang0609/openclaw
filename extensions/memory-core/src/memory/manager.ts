@@ -585,15 +585,22 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
             purpose: params.purpose,
             acquireLocalService: params.acquireLocalService,
           });
-          // Lightweight dirty-file detection for status mode: check for unindexed
-          // session files on disk without triggering a full sync. This runs before
-          // any caller reads manager.status(), so the dirty flag is accurate when
-          // status() reads sessionsDirty.
-          if (purpose === "status" && manager.sources.has("sessions")) {
-            try {
-              await manager.markSessionStartupCatchupDirtyFiles();
-            } catch (err) {
-              log.warn("memory status session dirty detection failed: " + String(err));
+          if (purpose === "status") {
+            // Source-state scans finish before status returns so missing watcher
+            // events cannot leave the indexed counts and dirty flag contradictory.
+            if (manager.sources.has("memory")) {
+              try {
+                await manager.markMemorySourceStateDirty();
+              } catch (err) {
+                log.warn("memory status memory dirty detection failed: " + String(err));
+              }
+            }
+            if (manager.sources.has("sessions")) {
+              try {
+                await manager.markSessionStartupCatchupDirtyFiles();
+              } catch (err) {
+                log.warn("memory status session dirty detection failed: " + String(err));
+              }
             }
           }
           return manager;

@@ -36,6 +36,22 @@ export function loadMemorySourceFileState(params: {
   };
 }
 
+export function hasMemorySourceStateDrift(params: {
+  files: Iterable<Pick<MemorySourceFileStateRow, "path" | "hash">>;
+  existingRows?: MemorySourceFileStateRow[] | null;
+}): boolean {
+  const existingRows = params.existingRows ?? [];
+  const indexedHashes = new Map(existingRows.map((row) => [row.path, row.hash]));
+  const activePaths = new Set<string>();
+  for (const file of params.files) {
+    activePaths.add(file.path);
+    if (indexedHashes.get(file.path) !== file.hash) {
+      return true;
+    }
+  }
+  return activePaths.size !== existingRows.length;
+}
+
 export function resolveMemorySourceExistingHash(params: {
   db: MemorySourceStateDb;
   source: MemorySource;

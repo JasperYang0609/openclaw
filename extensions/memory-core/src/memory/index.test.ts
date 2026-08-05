@@ -5107,5 +5107,29 @@ describe("memory index", () => {
       restoreMemoryIndexStateDir();
     }
   });
+
+  it("status-purpose manager detects a newly created canonical memory file as dirty", async () => {
+    const cfg = createCfg({ provider: "gemini" });
+    const indexedManager = await getFreshManager(cfg);
+    try {
+      await indexedManager.sync({ reason: "test", force: true });
+    } finally {
+      await indexedManager.close?.();
+    }
+    const cleanStatusManager = await getFreshManager(cfg, "status");
+    try {
+      expect(cleanStatusManager.status().dirty).toBe(false);
+    } finally {
+      await cleanStatusManager.close?.();
+    }
+    await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "# Newly created canonical memory\n");
+
+    const statusManager = await getFreshManager(cfg, "status");
+    try {
+      expect(statusManager.status().dirty).toBe(true);
+    } finally {
+      await statusManager.close?.();
+    }
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
