@@ -2802,6 +2802,7 @@ export async function runEmbeddedAttempt(
         const removeGuard = installToolResultContextGuard({
           agent: activeSession.agent,
           contextWindowTokens: contextTokenBudgetForGuard,
+          toolResultMaxChars: toolResultMaxCharsForGuard,
           ...midTurnPrecheckOptions,
         });
         removeToolResultContextGuard = () => {
@@ -2812,6 +2813,7 @@ export async function runEmbeddedAttempt(
         removeToolResultContextGuard = installToolResultContextGuard({
           agent: activeSession.agent,
           contextWindowTokens: contextTokenBudgetForGuard,
+          toolResultMaxChars: toolResultMaxCharsForGuard,
           ...midTurnPrecheckOptions,
         });
       }

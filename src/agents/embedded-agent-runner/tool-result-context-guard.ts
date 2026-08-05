@@ -469,6 +469,7 @@ export function installContextEngineLoopHook(params: {
 export function installToolResultContextGuard(params: {
   agent: GuardableAgent;
   contextWindowTokens: number;
+  toolResultMaxChars?: number;
   midTurnPrecheck?: MidTurnPrecheckOptions;
 }): () => void {
   const contextWindowTokens = Math.max(1, Math.floor(params.contextWindowTokens));
@@ -476,11 +477,21 @@ export function installToolResultContextGuard(params: {
     1_024,
     Math.floor(contextWindowTokens * CHARS_PER_TOKEN_ESTIMATE * PREEMPTIVE_OVERFLOW_RATIO),
   );
-  const maxSingleToolResultChars = Math.max(
+  const contextDerivedMaxSingleToolResultChars = Math.max(
     1_024,
     Math.floor(
       contextWindowTokens * TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE * SINGLE_TOOL_RESULT_CONTEXT_SHARE,
     ),
+  );
+  const configuredMaxSingleToolResultChars =
+    typeof params.toolResultMaxChars === "number" &&
+    Number.isFinite(params.toolResultMaxChars) &&
+    params.toolResultMaxChars > 0
+      ? Math.floor(params.toolResultMaxChars)
+      : contextDerivedMaxSingleToolResultChars;
+  const maxSingleToolResultChars = Math.max(
+    1,
+    Math.min(contextDerivedMaxSingleToolResultChars, configuredMaxSingleToolResultChars),
   );
 
   // Agent.transformContext is private in session runtime, so access it via a
