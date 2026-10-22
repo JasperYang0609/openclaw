@@ -12,7 +12,8 @@ export function getPluginSetupModuleLoader(
   rootDir: string,
 ) {
   const cache = getPluginCache();
-  const key = `setup:${record.id}:${source}`;
+  const entryScoped = record.setup?.entryScoped === true;
+  const key = `setup:${record.id}:${source}:${entryScoped ? "entry" : "package"}`;
   const cached = cache.setupModules.get(key);
   if (!cached && cache.retirement) {
     throw new Error(`Plugin ${record.id} setup inventory has retired`);
@@ -49,6 +50,8 @@ export function getPluginSetupModuleLoader(
         origin: record.origin,
         source,
         rootDir,
+        // Reuse selective capture and its recovery custody, never a runtime install receipt.
+        standalone: entryScoped,
       });
     } catch (error) {
       discard();

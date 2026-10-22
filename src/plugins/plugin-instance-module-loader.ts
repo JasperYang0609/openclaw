@@ -74,7 +74,7 @@ function retainedNativeEsmFor(
   }
   const owner = getPluginInstanceOwner(params.instance);
   const workspace = getPluginRuntimeLoadContextState(owner?.registry)?.workspaceDir;
-  const key = `${fs.realpathSync(params.source)}\0${workspace ?? ""}`;
+  const key = `${fs.realpathSync(params.source)}\0${workspace ?? ""}\0${params.standalone ? "entry" : "package"}`;
   let retained = retainedNativeEsmModules.get(key);
   if (!retained) {
     retained = {

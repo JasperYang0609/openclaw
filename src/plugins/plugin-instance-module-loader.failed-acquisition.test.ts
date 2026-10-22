@@ -8,6 +8,64 @@ import { resolveRuntimeWorkerThreadExecArgv } from "../infra/runtime-worker-url.
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
 
+it.each([true, false])(
+  "keeps worker native ESM entry and package captures separate (entry first: %s)",
+  async (entryFirst) => {
+    const root = temp.make("plugin-worker-scope-");
+    const captures = temp.make("plugin-worker-capture-");
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    fs.writeFileSync(path.join(root, "setup.mjs"), 'export const marker = "setup";');
+    fs.writeFileSync(path.join(root, "runtime.mjs"), 'export const marker = "runtime";');
+    const moduleUrl = (name: string) => new URL(name, import.meta.url).href;
+    const source = `
+      import assert from "node:assert/strict";
+      import { parentPort } from "node:worker_threads";
+      import { createPluginCache, withPluginCache } from ${JSON.stringify(moduleUrl("./plugin-cache.ts"))};
+      import { bindPluginInstanceModuleLoader } from ${JSON.stringify(moduleUrl("./plugin-instance-module-loader.ts"))};
+      import { PluginInstance } from ${JSON.stringify(moduleUrl("./plugin-instance.ts"))};
+      import { withPluginSourceCaptureDirectory } from ${JSON.stringify(moduleUrl("./plugin-package-metadata-capture.ts"))};
+      const rootDir = ${JSON.stringify(root)};
+      const source = ${JSON.stringify(path.join(root, "setup.mjs"))};
+      const runtime = ${JSON.stringify(path.join(root, "runtime.mjs"))};
+      const entry = new PluginInstance("worker-scope");
+      const full = new PluginInstance("worker-scope");
+      const cache = createPluginCache();
+      const bind = (instance, standalone) => withPluginCache(cache, () => {
+        bindPluginInstanceModuleLoader({ instance, origin: "config", rootDir, source, standalone });
+        assert.equal(instance.loadModule(source).marker, "setup");
+      });
+      try {
+        await withPluginSourceCaptureDirectory(${JSON.stringify(captures)}, async () => {
+          for (const standalone of ${JSON.stringify(entryFirst ? [true, false] : [false, true])}) {
+            bind(standalone ? entry : full, standalone);
+          }
+          assert.equal(entry.hasModuleSource(runtime), false, "entry scope must not borrow full capture");
+          assert.equal(full.hasModuleSource(runtime), true, "full scope must not borrow entry capture");
+          assert.notEqual(entry.sourceDigest, full.sourceDigest);
+          await entry.dispose();
+          assert.equal(full.loadModule(source).marker, "setup");
+        });
+        parentPort.postMessage("scopes separated");
+      } finally {
+        await entry.dispose();
+        await full.dispose();
+      }
+    `;
+    const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), {
+      execArgv: resolveRuntimeWorkerThreadExecArgv(
+        new URL("./plugin-instance-module-loader.ts", import.meta.url),
+      ),
+      workerData: { sourceCaptureDirectory: captures },
+    });
+    try {
+      const [result] = await once(worker, "message");
+      expect(result).toBe("scopes separated");
+    } finally {
+      await worker.terminate();
+    }
+  },
+);
+
 it("cleans up rejected native ESM acquisitions and failed compiled evaluations", async () => {
   const root = temp.make("plugin-native-failed-acquisition-");
   const captures = temp.make("plugin-native-failed-captures-");

@@ -256,6 +256,8 @@ export type PluginManifestSetup = {
    * Explicit false disables setup runtime; omission preserves the legacy fallback.
    */
   requiresRuntime?: boolean;
+  /** Capture only the setup entry's referenced graph; omission keeps package-wide capture. */
+  entryScoped?: boolean;
 };
 
 export type PluginManifestDoctorContract = {

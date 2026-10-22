@@ -1,5 +1,10 @@
 {
   "id": "acpx",
+  "cliCommands": [],
+  "setup": {
+    "requiresRuntime": true,
+    "entryScoped": true
+  },
   "categories": ["agent-runtimes"],
   "backupResources": [
     {

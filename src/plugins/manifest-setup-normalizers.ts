@@ -187,6 +187,7 @@ export function normalizeManifestSetup(value: unknown): PluginManifestSetup | un
     configMigrations: normalizeOptionalTrimmedStringList(value.configMigrations),
     nativeSessionCatalog: nativeSessionCatalog?.label ? nativeSessionCatalog : undefined,
     requiresRuntime: typeof value.requiresRuntime === "boolean" ? value.requiresRuntime : undefined,
+    entryScoped: value.entryScoped === true ? true : undefined,
   });
 }
 

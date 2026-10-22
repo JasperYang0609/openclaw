@@ -1,5 +1,6 @@
 {
   "id": "duckduckgo",
+  "cliCommands": [],
   "categories": ["web"],
   "activation": {
     "onStartup": false

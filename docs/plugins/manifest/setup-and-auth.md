@@ -227,6 +227,21 @@ When present, `setup.providers` and `setup.cliBackends` are the preferred descri
 
 Without an explicit `openclaw.setupEntry`, OpenClaw resolves the conventional `setup-api` file at the package root or in package-local `dist/`. Standalone runtime builds include that public surface automatically.
 
+For a self-contained setup entry, `setup.entryScoped: true` opts into capturing
+only that entry's referenced source, dependencies, and assets instead of the whole
+plugin package. Omission, `false`, and invalid values retain package-wide capture.
+This does not disable setup execution or auto-enable probes: keep
+`requiresRuntime: true` when setup registers hooks. It does not change plugin
+enablement, allowlists, or full-runtime capture and admission.
+
+Use this only for narrow setup surfaces whose inputs are discoverable by the
+selective capture loader; do not use it for setup code that requires a snapshot
+of unrelated package files. Referenced dependencies, late imports, assets,
+source-change and symlink checks, native admission, and recovery custody retain
+the existing selective-entry rules. Recovery keeps the same capture scope;
+entry-scoped setup snapshots are not full-runtime installation receipts. Bundled
+host modules retain their existing shared-loader policy.
+
 OpenClaw includes `setup.providers[].envVars` in generic provider auth and env-var lookups. Put setup and status env metadata there.
 
 Use `providerUsageAuthEnvVars` when a billing or organization-level credential must activate `resolveUsageAuth` without becoming an inference credential. These names join workspace dotenv blocking, ACP child-process stripping, sandbox secret filtering, and broad secret scrubbing. The provider runtime still reads and classifies the value inside `resolveUsageAuth`.

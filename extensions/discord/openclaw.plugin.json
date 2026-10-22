@@ -1,5 +1,6 @@
 {
   "id": "discord",
+  "cliCommands": [],
   "categories": [
     "channels"
   ],
