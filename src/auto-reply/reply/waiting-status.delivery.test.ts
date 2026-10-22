@@ -1,7 +1,12 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  admitMediaHandle,
+  resetGeneratedMediaTaskActivityForTests,
+} from "../../agents/media-generation-activity.test-support.js";
 import { SubagentRegistryWriteError } from "../../agents/subagents/registry/subagent-registry-persistence.js";
 import type * as SubagentRegistry from "../../agents/subagents/registry/subagent-registry.js";
+import { createMediaGenerationTaskLifecycle } from "../../agents/tools/media-generate-background-shared.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
@@ -139,6 +144,40 @@ beforeEach(() => {
   });
 });
 
+it.each(["ordinary", "queued"] as const)(
+  "hands a %s media continuation to its runtime-policy requester",
+  async (lane) => {
+    onTestFinished(resetGeneratedMediaTaskActivityForTests);
+    const context = createContext();
+    const runtimePolicySessionKey = "agent:main:subagent:media-requester";
+    context.runtimePolicySessionKey = runtimePolicySessionKey;
+    context.followupRun.run.runtimePolicySessionKey = runtimePolicySessionKey;
+    context.execution.result.meta = { durationMs: 0, continuationPending: true };
+    context.execution.result.acceptedSessionSpawns = [];
+    const handle = admitMediaHandle({
+      taskId: "waiting-image",
+      runId: "tool:image_generate:waiting-image",
+      requesterSessionKey: runtimePolicySessionKey,
+      requesterAgentId: context.followupRun.run.agentId,
+      taskLabel: "waiting image",
+    });
+    const payloads = await prepare(lane, context);
+    const draft = { push: vi.fn(), retire: vi.fn() };
+    expect(getReplyPayloadMetadata(payloads[0] ?? {})?.progressContinuation?.adopt(draft)).toBe(
+      true,
+    );
+    expect(draft.push).toHaveBeenCalledWith(expect.objectContaining({ status: "running" }));
+    createMediaGenerationTaskLifecycle("image").completeTaskRun({
+      handle,
+      provider: "fixture",
+      model: "fixture",
+      count: 1,
+    });
+    expect(draft.retire).toHaveBeenCalledOnce();
+    expect(settleRequester).not.toHaveBeenCalled();
+  },
+);
+
 it("delivers an ordinary terminal failure", async () => {
   const context = createContext();
   context.execution.result.acceptedSessionSpawns = undefined;
@@ -189,6 +228,7 @@ describe.each(["ordinary", "queued"] as const)("%s waiting status delivery", (la
         expect(getReplyPayloadMetadata(payloads[0] ?? {})).toMatchObject({
           continuationStatus: true,
           deliverDespiteSourceReplySuppression: true,
+          progressContinuation: { adopt: expect.any(Function), close: expect.any(Function) },
         });
         if (lane === "ordinary") {
           expect(onPendingContinuation.mock.calls).toEqual([[]]);

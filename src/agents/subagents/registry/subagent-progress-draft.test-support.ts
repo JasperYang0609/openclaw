@@ -21,7 +21,11 @@ export function useSubagentProgressCohort(fixture: { readonly stateDir: string }
   });
 
   /** The requester turn spawns announcing children, then yields them to its settle wake. */
-  return async function yieldCohort(requesterTurnRunId: string, ids: readonly string[]) {
+  return async function yieldCohort(
+    requesterTurnRunId: string,
+    ids: readonly string[],
+    handoff: "registered" | "intent" | "settled" = "settled",
+  ) {
     for (const id of ids) {
       await writeSubagentSessionEntry({
         stateDir: fixture.stateDir,
@@ -48,6 +52,9 @@ export function useSubagentProgressCohort(fixture: { readonly stateDir: string }
       childSessionKey: childKey(id),
       expectsCompletionMessage: true,
     }));
+    if (handoff === "registered") {
+      return spawns;
+    }
     expect(
       await markRequesterTurnYielded({
         requesterSessionKey: requesterKey,
@@ -55,6 +62,9 @@ export function useSubagentProgressCohort(fixture: { readonly stateDir: string }
         requesterTurnRunId,
       }),
     ).toBe(ids.length);
+    if (handoff === "intent") {
+      return spawns;
+    }
     expect(
       await settleRequesterAfterSessionSpawns({
         requesterSessionKey: requesterKey,

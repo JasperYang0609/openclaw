@@ -1,4 +1,5 @@
 import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
+import { hasCompletionMessageSessionSpawn } from "../../agents/accepted-session-spawn.js";
 import {
   hasCommittedSourceReplyDeliveryEvidence,
   hasCompletedSourceReplyDeliveryEvidence,
@@ -54,7 +55,10 @@ import {
   resolveStrandedReplyRecovery,
 } from "./stranded-reply-recovery.js";
 import { createTypingSignaler } from "./typing-mode.js";
-import { buildWaitingStatusPayload } from "./waiting-status.js";
+import {
+  attachWaitingStatusProgressContinuation,
+  buildWaitingStatusPayload,
+} from "./waiting-status.js";
 
 type FollowupDeliveryDecision =
   | {
@@ -340,6 +344,24 @@ export async function resolveFollowupDeliveryDecision(params: {
     if (payloads.length === 0) {
       return { kind: "suppress", reason: "message-tool-only" };
     }
+  }
+  const statusPayload = payloads.find(
+    (payload) => getReplyPayloadMetadata(payload)?.continuationStatus === true,
+  );
+  if (statusPayload) {
+    const mediaSessionKey =
+      result.meta?.continuationPending === true &&
+      !hasCompletionMessageSessionSpawn(result.acceptedSessionSpawns)
+        ? (turn.queued.run.runtimePolicySessionKey ?? turn.queued.run.sessionKey)
+        : undefined;
+    await attachWaitingStatusProgressContinuation({
+      payload: statusPayload,
+      acceptedSessionSpawns: result.acceptedSessionSpawns,
+      mediaRequester: mediaSessionKey
+        ? { sessionKey: mediaSessionKey, agentId: turn.queued.run.agentId }
+        : undefined,
+      operation: turn.operation,
+    });
   }
   return payloads.length > 0
     ? { kind: "deliver", payloads, resolved: runtimeResolved }

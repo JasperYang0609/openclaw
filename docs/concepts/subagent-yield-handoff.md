@@ -203,6 +203,22 @@ Gateway restart does not revive it. Other channels keep the waiting
 acknowledgment. A yielded turn still does not start a separate task or flow
 projection.
 
+Ordinary and queued waiting replies offer the same draft handoff. An implicit
+continuation may retain a confirmed draft after durable yield intent, before
+its waiting status is acknowledged; this does not release its requester claim
+or transfer final-delivery ownership early. Undelivered status compensation
+retires that provisional draft through the registry's normal settlement.
+
+While a retained draft still has an outstanding cohort, it refreshes recorded
+waiting state about every 90 seconds on the same message. The timestamp means
+that the current registry still records pending results or a pending requester
+response, not that the executor is healthy or making progress. No child prose,
+arguments, or results are included. An uncertain or revoked registry source
+shows an unavailable-state notice and stops refreshing; final settlement,
+accepted cancellation, or reset stops the timer. Channel authorization and
+transport throttling still apply, so this is not a delivery-time guarantee or
+a permanent typing indicator.
+
 [Progress cards](/tools/progress-card) remain durable session state. The parent
 updates its own card as work advances and when child results return. Inspect
 native child status or retained messages through [sub-agent commands](/tools/subagents/slash-command)

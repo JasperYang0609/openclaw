@@ -1,7 +1,12 @@
 import type { ProgressContinuationDraft } from "../../../channels/progress-continuation.js";
 import { onAgentEventForRun, type AgentEventPayload } from "../../../infra/agent-events.js";
+import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import { getSubagentRunsForChildSession } from "./subagent-registry-memory.js";
+import {
+  assertSubagentRegistryWriteOutcomeKnown,
+  assertSubagentRegistryWriteSourceCurrent,
+} from "./subagent-registry-persistence.js";
 import { subscribeSubagentRunChanges } from "./subagent-registry-publication.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { latestSubagentRun } from "./subagent-run-generation.js";
@@ -21,24 +26,40 @@ type LiveDraft = {
   /** Announcing tasks, by logical task id, whose result the requester is still owed. */
   members: Map<string, Member>;
   stopChanges: () => void;
+  stateContext: ReturnType<typeof captureOpenClawStateWorkerContext>;
+  waitTimer?: ReturnType<typeof setTimeout>;
+  retired: boolean;
 };
 
 // Process-local: the channel transport cannot outlive this Gateway, so a
 // replacement never revives a card from stored state.
 const liveByTask = new Map<string, LiveDraft>();
 const liveByWake = new Map<string, LiveDraft>();
+const WAIT_STATUS_REFRESH_MS = 90_000;
 
 const taskId = (entry: SubagentRunRecord) => entry.taskRunId ?? entry.runId;
 
 /**
- * The requester settle wake still owes this task's result to its requester. A
- * kill intent can still roll back, so only accepted cancellation ends the debt.
+ * An implicit continuation persists yield intent before its status is delivered.
+ * Visual custody can follow that intent without releasing the requester claim;
+ * the outbox still transfers final-delivery debt only after confirmed delivery.
  */
 function owesCompletion(entry: SubagentRunRecord | undefined): entry is SubagentRunRecord {
+  if (
+    !entry ||
+    entry.suppressCompletionDelivery === true ||
+    entry.killReconciliation?.suppressTaskDelivery === true
+  ) {
+    return false;
+  }
   return (
-    entry?.requesterSettleWake !== undefined &&
-    entry.suppressCompletionDelivery !== true &&
-    entry.killReconciliation?.suppressTaskDelivery !== true
+    entry.requesterSettleWake !== undefined ||
+    (entry.requesterTurnRunId !== undefined &&
+      entry.requesterTurnYielded === true &&
+      entry.expectsCompletionMessage === true &&
+      entry.completion?.required === true &&
+      (entry.delivery?.status === "pending" || entry.delivery?.status === "failed") &&
+      entry.delivery.disposition !== "permanent_failure")
   );
 }
 
@@ -133,6 +154,12 @@ function drop(live: LiveDraft, id: string): void {
 }
 
 function retire(live: LiveDraft): void {
+  if (live.retired) {
+    return;
+  }
+  live.retired = true;
+  clearTimeout(live.waitTimer);
+  live.waitTimer = undefined;
   live.stopChanges();
   for (const id of live.members.keys()) {
     drop(live, id);
@@ -166,6 +193,56 @@ function reconcile(live: LiveDraft): void {
   }
 }
 
+/** Refresh recorded waiting state, not a claim that an executor is making progress. */
+function scheduleWaitingStatus(live: LiveDraft): void {
+  if (live.retired || live.waitTimer || live.members.size === 0) {
+    return;
+  }
+  live.waitTimer = setTimeout(() => {
+    live.waitTimer = undefined;
+    if (live.retired) {
+      return;
+    }
+    try {
+      assertSubagentRegistryWriteSourceCurrent(live.stateContext);
+      const runIds = [...live.members].flatMap(([id, member]) => [
+        member.row.runId,
+        currentRow(id, member.childSessionKey, member.childAgentId)?.runId ?? member.row.runId,
+      ]);
+      assertSubagentRegistryWriteOutcomeKnown(runIds, live.stateContext.admission);
+    } catch {
+      // Do not turn stale or uncertain registry state into a perpetual positive heartbeat.
+      live.draft.push({
+        itemId: "requester:wait",
+        kind: "subagent",
+        phase: "update",
+        title: "Waiting status unavailable; inspect task state",
+        summary: "waiting",
+      });
+      return;
+    }
+    reconcile(live);
+    if (live.retired) {
+      return;
+    }
+    const ended = [...live.members.values()].every(
+      ({ row }) => row.execution.status === "terminal" && row.pauseReason !== "sessions_yield",
+    );
+    const state = ended
+      ? "Delegated tasks ended; requester response pending"
+      : "Delegated results pending";
+    live.draft.push({
+      itemId: "requester:wait",
+      kind: "subagent",
+      phase: "update",
+      title: state + " · recorded status checked at " + new Date().toISOString(),
+      summary: "waiting",
+    });
+    scheduleWaitingStatus(live);
+  }, WAIT_STATUS_REFRESH_MS);
+  live.waitTimer.unref?.();
+}
+
 /**
  * Keep the yielding turn's confirmed draft for its announcing children. The
  * requester settle wake remains the only final-delivery owner; the draft is
@@ -184,6 +261,9 @@ export function adoptSubagentProgressDraft(
     entries.some(
       (entry) =>
         liveByTask.has(taskId(entry)) ||
+        // A resumed requester keeps its inherited draft across delivery-gated re-yield.
+        (entry.requesterTurnRunId !== undefined &&
+          liveByWake.get(entry.requesterTurnRunId)?.retired === false) ||
         entry.killIntent ||
         entry.killReconciliation ||
         // A wake that already started cannot report a re-yield to this draft.
@@ -192,9 +272,16 @@ export function adoptSubagentProgressDraft(
   ) {
     return false;
   }
-  const live: LiveDraft = { draft, members: new Map(), stopChanges: () => undefined };
+  const live: LiveDraft = {
+    draft,
+    members: new Map(),
+    stopChanges: () => undefined,
+    stateContext: captureOpenClawStateWorkerContext(),
+    retired: false,
+  };
   live.stopChanges = subscribeSubagentRunChanges("projection", () => reconcile(live));
   track(live, entries);
+  scheduleWaitingStatus(live);
   return true;
 }
 

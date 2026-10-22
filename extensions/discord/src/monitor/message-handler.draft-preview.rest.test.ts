@@ -255,6 +255,9 @@ describe("Discord draft preview REST lifecycle", () => {
     let draft: RetainedDraft | undefined;
     try {
       await stageDelegation(controller);
+      await controller.pushPlanProgress([
+        { step: "Keep the parent checklist", status: "in_progress" },
+      ]);
       const retainedStream = controller.draftStream!;
       await deliverWaitingReply(harness, (candidate) => {
         draft = candidate;
@@ -268,6 +271,19 @@ describe("Discord draft preview REST lifecycle", () => {
       await vi.advanceTimersByTimeAsync(1_200);
       await retainedStream.flush();
       expect(visible.get("1")).toContain("Review: running");
+      draft!.push({
+        itemId: "requester:wait",
+        kind: "subagent",
+        phase: "update",
+        title: "Delegated results pending · recorded status checked at 2026-10-22T09:30:00.000Z",
+        summary: "waiting",
+      });
+      await vi.advanceTimersByTimeAsync(1_200);
+      await retainedStream.flush();
+      expect(visible.get("1")).toContain("recorded status checked at 2026-10-22T09:30:00.000Z");
+      expect(visible.get("1")).toContain("▸ Keep the parent checklist");
+      expect(visible.get("1")).not.toContain("Waiting for delegated work.");
+      expect(requests.filter((method) => method === "POST")).toHaveLength(1);
       expect(visible.size).toBe(1);
       await controller.pushItemEvent({ kind: "preamble", progressText: "Late parent text" });
       expect(controller.handleQueuedFollowupAdmitted()).toBe(true);

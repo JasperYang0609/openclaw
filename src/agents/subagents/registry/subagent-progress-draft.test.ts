@@ -20,9 +20,16 @@ import {
   useSubagentProgressCohort,
 } from "./subagent-progress-draft.test-support.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
-import { adoptPausedSubagentRunForFollowUp } from "./subagent-registry.js";
+import * as registryPersistence from "./subagent-registry-persistence.js";
+import {
+  adoptPausedSubagentRunForFollowUp,
+  settleRequesterAfterSessionSpawns,
+} from "./subagent-registry.js";
 import { rowToSubagentRunRecord } from "./subagent-registry.store.codec.js";
-import { testing as registryTesting } from "./subagent-registry.test-helpers.js";
+import {
+  resetSubagentRegistryForTests,
+  testing as registryTesting,
+} from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const fixture = useSubagentControlFixture();
@@ -123,6 +130,146 @@ const newDraft = (): TestDraft => ({ push: vi.fn(), retire: vi.fn() });
 function expectNoChildResultPushed(draft: TestDraft) {
   expect(JSON.stringify(draft.push.mock.calls)).not.toContain(CHILD_RESULT);
 }
+
+it("refreshes recorded pending status every 90 seconds without inventing execution liveness", async () => {
+  const spawns = await yieldCohort("parent-turn", ["a"]);
+  const draft = newDraft();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  try {
+    expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
+    await vi.advanceTimersByTimeAsync(89_999);
+    expect(draft.push).not.toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: "requester:wait" }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    const first = draft.push.mock.calls.at(-1)?.[0];
+    expect(first).toMatchObject({
+      itemId: "requester:wait",
+      kind: "subagent",
+      phase: "update",
+      summary: "waiting",
+      title: expect.stringMatching(/^Delegated results pending · recorded status checked at /),
+    });
+    expect(first.status).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(draft.push.mock.calls.at(-1)?.[0].title).not.toBe(first.title);
+    await resetSubagentRegistryForTests();
+    expect(draft.retire).toHaveBeenCalledOnce();
+    const count = draft.push.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(draft.push).toHaveBeenCalledTimes(count);
+    expectNoChildResultPushed(draft);
+  } finally {
+    vi.useRealTimers();
+    await resetSubagentRegistryForTests();
+  }
+});
+
+it("stops waiting refreshes when the registry outcome is uncertain", async () => {
+  const spawns = await yieldCohort("parent-turn", ["a"]);
+  const draft = newDraft();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const guard = vi.spyOn(registryPersistence, "assertSubagentRegistryWriteOutcomeKnown");
+  try {
+    expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
+    guard.mockImplementationOnce(() => {
+      throw new Error("private persistence error must not cross the audience boundary");
+    });
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(draft.push.mock.calls.at(-1)?.[0]).toMatchObject({
+      itemId: "requester:wait",
+      title: "Waiting status unavailable; inspect task state",
+      summary: "waiting",
+    });
+    const count = draft.push.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(draft.push).toHaveBeenCalledTimes(count);
+    expect(JSON.stringify(draft.push.mock.calls)).not.toContain("private persistence error");
+    expect(draft.retire).not.toHaveBeenCalled();
+  } finally {
+    guard.mockRestore();
+    vi.useRealTimers();
+    await resetSubagentRegistryForTests();
+  }
+});
+
+it.each(["error", "timeout"] as const)(
+  "projects a child's %s and stops waiting refreshes only after its requester settles",
+  async (status) => {
+    const spawns = await yieldCohort("parent-turn", ["a"]);
+    const draft = newDraft();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
+      const wakes = answerWakes(draft, ["The delegated check failed."]);
+      await endRun("a", {
+        phase: status === "error" ? "error" : "end",
+        status,
+        ...(status === "error" ? { error: "synthetic worker failure" } : {}),
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await fixture.settle();
+      expect(subagentRuns.get("a")?.execution.outcome?.status).toBe(status);
+      expect(draft.push).toHaveBeenCalledWith(
+        expect.objectContaining({ itemId: "a", kind: "subagent", status: "failed" }),
+      );
+      expect(wakes).toEqual([{ runId: expect.any(String), retiredBefore: 0 }]);
+      expect(draft.retire).toHaveBeenCalledOnce();
+      const count = draft.push.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(draft.push).toHaveBeenCalledTimes(count);
+      expectNoChildResultPushed(draft);
+    } finally {
+      vi.useRealTimers();
+      await resetSubagentRegistryForTests();
+    }
+  },
+);
+
+it("does not adopt before a requester durably yields its announcing child", async () => {
+  const spawns = await yieldCohort("parent-turn", ["a"], "registered");
+  const draft = newDraft();
+  expect(adoptSubagentProgressDraft(spawns, draft)).toBe(false);
+  expect(draft.push).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  "keeps an implicit draft across the delivery-gated handoff (status delivered=%s)",
+  async (delivered) => {
+    const spawns = await yieldCohort("parent-turn", ["a"], "intent");
+    const draft = newDraft();
+    try {
+      expect(subagentRuns.get("a")?.requesterSettleWake).toBeUndefined();
+      expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
+      // Visual custody does not release the requester or transfer final-delivery debt.
+      expect(subagentRuns.get("a")?.requesterSettleWake).toBeUndefined();
+      expect(subagentRuns.get("a")?.requesterTurnRunId).toBe("parent-turn");
+      const wakes = answerWakes(draft, ["The delegated work is done."]);
+      expect(
+        await settleRequesterAfterSessionSpawns({
+          requesterSessionKey: requesterKey,
+          requesterAgentId: "main",
+          requesterTurnRunId: "parent-turn",
+          requesterYielded: delivered,
+          acceptedSessionSpawns: spawns,
+        }),
+      ).toBe(true);
+      if (delivered) {
+        expect(draft.retire).not.toHaveBeenCalled();
+        await endRun("a");
+        expect(wakes).toEqual([{ runId: expect.any(String), retiredBefore: 0 }]);
+      } else {
+        expect(wakes).toEqual([]);
+        expect(subagentRuns.get("a")?.requesterSettleWake).toBeUndefined();
+      }
+      expect(draft.retire).toHaveBeenCalledOnce();
+      expectNoChildResultPushed(draft);
+    } finally {
+      // Publish removal even if an assertion fails after transport adoption.
+      await resetSubagentRegistryForTests();
+    }
+  },
+);
 
 it.each([
   ["a visible answer", ["The delegated work is done."]],
@@ -279,6 +426,8 @@ it("follows a child's resumed execution and retires after the replacement settle
 });
 
 it("keeps the card for the resumed requester's re-yield cohort until that cohort settles", async () => {
+  const secondDraft = newDraft();
+  let secondAdopted: boolean | undefined;
   const spawns = await yieldCohort("parent-turn", ["a", "b"]);
   const draft = newDraft();
   expect(adoptSubagentProgressDraft(spawns, draft)).toBe(true);
@@ -286,7 +435,19 @@ it("keeps the card for the resumed requester's re-yield cohort until that cohort
     draft,
     ["Waiting for the follow-up checks.", "Everything is verified."],
     async (params) => {
-      await yieldCohort(String(params?.idempotencyKey), ["c", "d"]);
+      const requesterTurnRunId = String(params?.idempotencyKey);
+      const nextSpawns = await yieldCohort(requesterTurnRunId, ["c", "d"], "intent");
+      // Observe inside the wake; assert after settlement so failure cannot become a retry.
+      secondAdopted = adoptSubagentProgressDraft(nextSpawns, secondDraft);
+      expect(
+        await settleRequesterAfterSessionSpawns({
+          requesterSessionKey: requesterKey,
+          requesterAgentId: "main",
+          requesterTurnRunId,
+          requesterYielded: true,
+          acceptedSessionSpawns: nextSpawns,
+        }),
+      ).toBe(true);
     },
   );
 
@@ -305,6 +466,9 @@ it("keeps the card for the resumed requester's re-yield cohort until that cohort
   expect(wakes).toHaveLength(2);
   expect(wakes[1]).toEqual({ runId: expect.any(String), retiredBefore: 0 });
   expect(wakes[1]!.runId).not.toBe(wakes[0]!.runId);
+  expect(secondAdopted).toBe(false);
+  expect(secondDraft.push).not.toHaveBeenCalled();
+  expect(secondDraft.retire).not.toHaveBeenCalled();
   expect(draft.retire).toHaveBeenCalledOnce();
   expectNoChildResultPushed(draft);
 });
