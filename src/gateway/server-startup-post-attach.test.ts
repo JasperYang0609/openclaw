@@ -466,6 +466,7 @@ describe("startGatewayPostAttachRuntime", () => {
     testState = await createOpenClawTestState({ label: "gateway-post-attach" });
     vi.stubEnv("OPENCLAW_SKIP_CHANNELS", "0");
     vi.stubEnv("OPENCLAW_SKIP_PROVIDERS", "0");
+    vi.stubEnv("OPENCLAW_OPERATOR_MAINTENANCE", "0");
     hoisted.startPluginServices.mockReset();
     hoisted.startGmailWatcherWithLogs.mockClear();
     hoisted.prepareInternalHooks.mockClear();
@@ -1224,6 +1225,44 @@ describe("startGatewayPostAttachRuntime", () => {
       ]);
       expect(runtimeDeps.startGatewaySidecars).not.toHaveBeenCalled();
       expect(runtimeDeps.createGatewayUpdateCheck).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])(
+    "preserves operator maintenance=%s while keeping interactive channels available",
+    async (maintenance) => {
+      vi.stubEnv("OPENCLAW_OPERATOR_MAINTENANCE", maintenance ? "1" : "0");
+      const startupWork: Promise<unknown>[] = [];
+      const params = createPostAttachParams({
+        trackStartupWork: (run) => {
+          const work = run(new AbortController().signal);
+          startupWork.push(work);
+          return work;
+        },
+      });
+      const runtime = await startGatewayPostAttachRuntime(
+        params,
+        createPostAttachRuntimeDeps({ startGatewaySidecars: startGatewaySidecarsImpl }),
+      );
+      await runtime.startupSettled;
+      await Promise.all(startupWork);
+      expect(params.startChannels).toHaveBeenCalledOnce();
+      expect(params.unlockStartupMethods).toHaveBeenCalledOnce();
+      expect(hoisted.startPluginServices).toHaveBeenCalledTimes(maintenance ? 0 : 1);
+      expect(hoisted.markStartupOrphanedMainSessionsForRecovery).toHaveBeenCalledTimes(
+        maintenance ? 0 : 1,
+      );
+      expect(hoisted.scheduleRestartAbortedMainSessionRecovery).toHaveBeenCalledTimes(
+        maintenance ? 0 : 1,
+      );
+      expect(hoisted.updateCheck.start).toHaveBeenCalledTimes(maintenance ? 0 : 1);
+      if (maintenance) {
+        expect(hoisted.activateSubagentRegistry).not.toHaveBeenCalled();
+        expect(hoisted.startGmailWatcherWithLogs).not.toHaveBeenCalled();
+        expect(hoisted.reconcilePendingSessionIdentities).not.toHaveBeenCalled();
+        expect(hoisted.triggerInternalHook).not.toHaveBeenCalled();
+      }
+      await runtime.stopGatewayUpdateCheck();
     },
   );
 

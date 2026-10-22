@@ -27,6 +27,8 @@ import { registerGatewayCronStartupTests } from "./server-runtime-services.cron.
 import {
   createLog,
   createMaintenanceHandles,
+  createTestCronState,
+  createTestCronReconciliation,
   runtimeServiceMocks as hoisted,
   resetRuntimeServiceMocks,
   waitForFast,
@@ -47,6 +49,7 @@ describe("server-runtime-services", () => {
     // worker's import order cannot silently disable this suite's health monitor.
     vi.stubEnv("OPENCLAW_SKIP_CHANNELS", "");
     vi.stubEnv("OPENCLAW_SKIP_PROVIDERS", "");
+    vi.stubEnv("OPENCLAW_OPERATOR_MAINTENANCE", "");
     resetGatewayWorkAdmission();
     resetRuntimeServiceMocks();
   });
@@ -121,6 +124,46 @@ describe("server-runtime-services", () => {
     });
 
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["startup", "reload"] as const)(
+    "preserves operator maintenance before cron %s acquires work",
+    async (reason) => {
+      vi.stubEnv("OPENCLAW_OPERATOR_MAINTENANCE", "1");
+      const cron = { start: vi.fn(async () => {}) };
+      const reconciliation = createTestCronReconciliation();
+      const afterStart = vi.fn(async () => {});
+      startGatewayCronWithLogging({
+        cronState: createTestCronState(cron),
+        cronReconciliation: reconciliation,
+        reason,
+        config: {},
+        afterStart,
+        logCron: createLog(),
+      });
+      await Promise.resolve();
+      expect(reconciliation.arm).not.toHaveBeenCalled();
+      expect(cron.start).not.toHaveBeenCalled();
+      expect(afterStart).not.toHaveBeenCalled();
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+    },
+  );
+
+  it("preserves operator maintenance for scheduled service activation and cleanup", async () => {
+    vi.stubEnv("OPENCLAW_OPERATOR_MAINTENANCE", "true");
+    const scheduler = createTestGatewayScheduler();
+    const { services } = activateScheduledServicesForTest({ scheduler });
+    try {
+      expect(hoisted.startHeartbeatRunner).not.toHaveBeenCalled();
+      expect(hoisted.startSessionUpstreamMonitor).not.toHaveBeenCalled();
+      expect(hoisted.startSessionDeliveryRuntime).not.toHaveBeenCalled();
+      expect(hoisted.recoverPendingDeliveries).not.toHaveBeenCalled();
+      services.heartbeatRunner.updateConfig({});
+    } finally {
+      services.heartbeatRunner.stop();
+      await services.stopDeliveryRecovery();
+      await scheduler.stop();
+    }
   });
 
   registerGatewayCronStartupTests(startGatewayCronWithLogging);

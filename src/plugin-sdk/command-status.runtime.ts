@@ -42,7 +42,7 @@ export async function resolveDirectStatusReplyForSessionCore(
     return undefined;
   }
 
-  const statusLoaded = loadGatewaySessionEntryReadOnly(requestedSessionKey);
+  const statusLoaded = loadGatewaySessionEntryReadOnly(requestedSessionKey, { clone: false });
   const statusCfg = statusLoaded.cfg ?? params.cfg;
   const statusSessionKey = statusLoaded.canonicalKey;
   const statusEntry = statusLoaded.entry;

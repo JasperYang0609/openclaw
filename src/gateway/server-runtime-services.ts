@@ -9,6 +9,7 @@ import {
   type DeliveryQueueStateContext,
 } from "../infra/delivery-queue-sqlite.js";
 import { computeBackoffMs } from "../infra/delivery-recovery.shared.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resolveHeartbeatAgents, resolveHeartbeatIntervalMs } from "../infra/heartbeat-config.js";
 import type { runHeartbeatOnce } from "../infra/heartbeat-runner-run.js";
@@ -73,8 +74,12 @@ export function startGatewayCronWithLogging(params: {
   config: OpenClawConfig;
   afterStart?: () => Promise<void>;
   onStartError?: (error: unknown) => void;
-  logCron: { error: (message: string) => void };
+  logCron: { error: (message: string) => void; info?: (message: string) => void };
 }): void {
+  if (isTruthyEnvValue(process.env.OPENCLAW_OPERATOR_MAINTENANCE)) {
+    params.logCron.info?.("operator maintenance: cron activation paused");
+    return;
+  }
   const reconciliation = params.cronReconciliation.arm({
     reason: params.reason,
     config: params.config,
@@ -496,9 +501,9 @@ export function activateGatewayScheduledServices(params: {
   log: GatewayRuntimeServiceLogger;
   resolveGatewayContext?: GatewayContextResolver;
 }): { heartbeatRunner: HeartbeatRunner; stopDeliveryRecovery: () => Promise<void> } {
-  if (params.minimalTestGateway) {
-    // Minimal gateways keep handles callable but inert so tests can share shutdown paths with
-    // production starts without launching background loops.
+  if (params.minimalTestGateway || isTruthyEnvValue(process.env.OPENCLAW_OPERATOR_MAINTENANCE)) {
+    // Minimal and operator-maintenance gateways keep handles callable but inert so shutdown
+    // paths remain uniform without launching autonomous background loops.
     return {
       heartbeatRunner: createNoopHeartbeatRunner(),
       stopDeliveryRecovery: async () => {},

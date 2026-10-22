@@ -100,6 +100,30 @@ describe("resolveDirectStatusReplyForSessionCore", () => {
     });
   });
 
+  it("preserves read-only entry identity for direct status account selection", async () => {
+    const entry = { sessionId: "status-identity", authProfileOverride: "synthetic:profile" };
+    loadSessionEntry.mockImplementation((key: string, options?: { clone?: boolean }) => ({
+      cfg: {},
+      canonicalKey: key,
+      entry: options?.clone === false ? entry : structuredClone(entry),
+      store: { [key]: entry },
+      storePath: "/synthetic/sessions.json",
+    }));
+    await resolveDirectStatusReplyForSessionCore({
+      cfg: {},
+      sessionKey: "main",
+      channel: "cli",
+      senderIsOwner: true,
+      isAuthorizedSender: true,
+      isGroup: false,
+      defaultGroupActivation: () => "always",
+    });
+    const selection = createModelSelectionState.mock.calls[0]?.[0];
+    expect(selection.sessionEntry).toBe(selection.sessionStore[selection.sessionKey]);
+    expect(loadSessionEntry).toHaveBeenCalledWith("main", { clone: false });
+    expect(entry.authProfileOverride).toBe("synthetic:profile");
+  });
+
   it("treats agentCfg reasoningDefault as explicit for direct /status", async () => {
     const result = await resolveDirectStatusReplyForSessionCore({
       cfg: {},

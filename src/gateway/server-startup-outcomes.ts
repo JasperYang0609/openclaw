@@ -20,6 +20,7 @@ type GatewayStartupSkippedReason =
   | "disabled-by-environment"
   | "hooks-disabled"
   | "superseded"
+  | "operator-maintenance"
   | "no-gmail-account";
 
 type GatewayStartupOutcome =
